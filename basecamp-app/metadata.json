@@ -1,0 +1,25 @@
+{
+  "name": "whistleblower",
+  "version": "0.1.0",
+  "description": "LP-0017 Whistleblower: censorship-resistant document upload and indexing",
+  "author": "retraca",
+  "type": "basecamp",
+  "category": "content",
+  "interface": "basecamp",
+  "main": "whistleblower_plugin",
+  "codegen": {
+    "impl_header": "src/whistleblower_impl.h"
+  },
+  "dependencies": [
+    "storage_module",
+    "delivery_module",
+    "lez_wallet_module"
+  ],
+  "interface_dependencies": [],
+  "include": [],
+  "capabilities": ["storage.upload", "delivery.publish"],
+  "nix": {
+    "packages": { "runtime": ["nlohmann_json"] },
+    "cmake": { "extra_include_dirs": [] }
+  }
+}
