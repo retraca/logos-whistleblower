@@ -1,0 +1,12 @@
+[package]
+name = "cid-registry"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+borsh = { version = "1", features = ["derive"] }
+nssa-core = { git = "https://github.com/logos-co/lez-build.git" }
+spel-framework = { git = "https://github.com/logos-co/spel.git" }
+
+[dev-dependencies]
+nssa-core = { git = "https://github.com/logos-co/lez-build.git" }

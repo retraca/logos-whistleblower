@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "cid-registry",
+    "document-indexer",
+    "batch-anchor-cli",
+]
+resolver = "2"
