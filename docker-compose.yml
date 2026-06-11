@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  sequencer:
+    image: lssa/sequencer_service
+    ports:
+      - "3040:3040"
+    environment:
+      RUST_LOG: info
+      RISC0_SERVER_PATH: /usr/local/bin/r0vm
+    volumes:
+      - sequencer_data:/var/lib/sequencer_service
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -sf
+        - http://localhost:3040/
+        - -H
+        - "Content-Type: application/json"
+        - -d
+        - '{"jsonrpc":"2.0","method":"hello","params":{},"id":1}'
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  storage:
+    image: lssa/logos_storage_service
+    ports:
+      - "8080:8080"
+    depends_on:
+      sequencer:
+        condition: service_healthy
+
+  delivery:
+    image: lssa/logos_delivery_service
+    ports:
+      - "9090:9090"
+    depends_on:
+      sequencer:
+        condition: service_healthy
+
+volumes:
+  sequencer_data:
