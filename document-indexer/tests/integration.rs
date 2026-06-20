@@ -5,7 +5,7 @@
 // Run with:
 //   cargo test --workspace --test integration -- --include-ignored
 
-use document_indexer::{Indexer, IndexerConfig, MetadataEnvelope};
+use document_indexer::{Indexer, IndexerConfig, MetadataEnvelope, StorageBackend};
 
 fn default_config() -> IndexerConfig {
     IndexerConfig {
@@ -16,6 +16,8 @@ fn default_config() -> IndexerConfig {
         sequencer_url: std::env::var("SEQUENCER_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:3040".into()),
         delivery_topic: "whistleblower/v1/documents/test".into(),
+        // production storage/delivery via the logoscore modules; anchoring via spel
+        backend: StorageBackend::from_env(),
     }
 }
 

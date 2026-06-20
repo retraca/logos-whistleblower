@@ -181,11 +181,13 @@ impl Indexer {
         Ok(IndexResult { cid, metadata_hash })
     }
 
-    /// Submit a batch anchor transaction to the on-chain CID registry via the
-    /// sequencer RPC.
+    /// Anchor a batch of `(cid_string, metadata_hash)` on the on-chain CID registry
+    /// via the real `spel anchor-batch` path (a genuine RISC0-proved tx). Returns the
+    /// tx hash. Already-registered CIDs are idempotent no-ops on-chain.
     ///
-    /// Entries are (cid_string, metadata_hash) pairs. Already-registered CIDs
-    /// are ignored by the on-chain program (idempotent).
+    /// Uses `spel` from `SPEL_BIN` (default `spel`), IDL from `SPEL_IDL`, run in
+    /// `SPEL_WORKDIR`. For high-volume anchoring use the `batch-anchor` tool; this is
+    /// the indexer's convenience anchor (e.g. the app's optional "anchor on-chain").
     pub async fn anchor_batch(
         &self,
         entries: Vec<(String, [u8; 32])>,
@@ -201,45 +203,49 @@ impl Indexer {
                 cid_registry::MAX_BATCH_SIZE
             );
         }
-        let payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "submitTransaction",
-            "params": {
-                "program": "cid-registry",
-                "instruction": "anchor_batch",
-                "entries": entries.iter().map(|(cid, hash)| {
-                    serde_json::json!({
-                        "cid": cid,
-                        "metadata_hash": hex::encode(hash),
-                        "timestamp": timestamp,
-                    })
-                }).collect::<Vec<_>>()
-            },
-            "id": 1
-        });
-        let resp = self.client
-            .post(&format!("{}/", self.config.sequencer_url))
-            .json(&payload)
-            .send()
-            .await?;
-        let text = resp.text().await?;
-        Ok(text)
+        let cids = entries.iter()
+            .map(|(c, _)| decode_cid(c).map(|b| hex::encode(b)))
+            .collect::<Result<Vec<_>>>()?
+            .join(",");
+        let metas = entries.iter().map(|(_, h)| hex::encode(h)).collect::<Vec<_>>().join(",");
+        let times = entries.iter().map(|_| timestamp.to_string()).collect::<Vec<_>>().join(",");
+        let spel = std::env::var("SPEL_BIN").unwrap_or_else(|_| "spel".into());
+        let idl = std::env::var("SPEL_IDL").unwrap_or_else(|_| "cid-registry/cid-registry.idl.json".into());
+        let workdir = std::env::var("SPEL_WORKDIR").unwrap_or_else(|_| ".".into());
+        let out = tokio::process::Command::new(&spel)
+            .current_dir(&workdir)
+            .args(["--idl", &idl, "--", "anchor-batch",
+                   "--entries-cids", &cids, "--entries-meta-hashes", &metas,
+                   "--entries-timestamps", &times])
+            .output().await?;
+        if !out.status.success() {
+            bail!("spel anchor-batch failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let tx = stdout.lines()
+            .find(|l| l.contains("tx_hash"))
+            .map(|l| l.split_whitespace().last().unwrap_or("submitted").to_string())
+            .unwrap_or_else(|| "submitted".into());
+        Ok(tx)
     }
 
-    /// Check whether a CID is already registered on the on-chain registry.
+    /// Check whether a CID is already registered: decode the registry PDA via
+    /// `spel inspect` and look for the CID among its records. PDA from `REGISTRY_PDA`.
     pub async fn is_anchored(&self, cid: &str) -> Result<bool> {
-        let payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "queryCidRegistry",
-            "params": { "cid": cid },
-            "id": 1,
-        });
-        let resp: serde_json::Value = self.client
-            .post(&format!("{}/", self.config.sequencer_url))
-            .json(&payload)
-            .send().await?
-            .json().await?;
-        Ok(resp["result"]["found"].as_bool().unwrap_or(false))
+        let want = hex::encode(decode_cid(cid)?);
+        let spel = std::env::var("SPEL_BIN").unwrap_or_else(|_| "spel".into());
+        let idl = std::env::var("SPEL_IDL").unwrap_or_else(|_| "cid-registry/cid-registry.idl.json".into());
+        let workdir = std::env::var("SPEL_WORKDIR").unwrap_or_else(|_| ".".into());
+        let pda = std::env::var("REGISTRY_PDA")
+            .unwrap_or_else(|_| "6QzQcyJn7LoYiSZkNoLmv5SbYCC4ba4BEDGt7KTeXCEM".into());
+        let out = tokio::process::Command::new(&spel)
+            .current_dir(&workdir)
+            .args(["inspect", &pda, "--idl", &idl, "--type", "RegistryState"])
+            .output().await?;
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        Ok(v["records"].as_array()
+            .map(|rs| rs.iter().any(|r| r["cid"].as_str() == Some(want.as_str())))
+            .unwrap_or(false))
     }
 
     // ── private helpers ──────────────────────────────────────────────────────

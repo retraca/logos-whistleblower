@@ -35,6 +35,9 @@ jobs:
       - name: Unit tests
         run: cargo test --workspace --lib
 
-      # Full upload->broadcast->anchor e2e (tests/integration.rs) is #[ignore]'d:
-      # it needs a live LEZ sequencer + Logos storage/delivery modules, which are
-      # not yet published as CI images. Run locally with `RISC0_DEV_MODE=0 bash demo.sh`.
+      # Compile-check the e2e integration tests (they are #[ignore]'d at runtime:
+      # the full upload->broadcast->anchor flow needs a live LEZ sequencer + Logos
+      # storage/delivery modules, not yet published as CI images). This keeps the
+      # e2e harness from rotting. Run it for real locally: `RISC0_DEV_MODE=0 bash demo.sh`.
+      - name: Compile e2e integration tests
+        run: cargo test -p document-indexer --test integration --no-run

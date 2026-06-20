@@ -45,6 +45,8 @@ let result = indexer.upload_and_broadcast(file_bytes, MetadataEnvelope {
 println!("CID: {}  metadata_hash: {:x?}", result.cid, result.metadata_hash);
 
 // 3: anchor a batch on-chain (≤ 50 entries; already-anchored CIDs are idempotent no-ops).
+// Anchoring drives the real `spel anchor-batch` path: SPEL_BIN / SPEL_IDL / SPEL_WORKDIR
+// (and REGISTRY_PDA for `is_anchored`). For high volume, prefer the `batch-anchor` tool.
 indexer.anchor_batch(vec![(result.cid.clone(), result.metadata_hash)], unix_now()).await?;
 
 // query: is this CID already anchored?
