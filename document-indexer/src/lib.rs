@@ -283,7 +283,15 @@ impl Indexer {
             hex::encode(Sha256::digest(data))
         ));
         tokio::fs::write(&tmp, data).await?;
-        let expr = format!("storage.upload(\"{}\", \"whistleblower-doc\")", tmp.display());
+        let tmp_str = tmp.to_str()
+            .ok_or_else(|| anyhow::anyhow!("temp path is not valid UTF-8"))?;
+        // The path is interpolated into the logoscore `-c` expression; reject any
+        // path that could break out of the quoted string literal. Our filename is
+        // hex(sha256), so this only guards a pathological temp_dir.
+        if tmp_str.contains('"') || tmp_str.contains('\\') {
+            bail!("temp path contains characters unsafe for the logoscore expression");
+        }
+        let expr = format!("storage.upload(\"{}\", \"whistleblower-doc\")", tmp_str);
         let out = tokio::process::Command::new(logoscore_bin)
             .args(["-m", modules_dir, "-l", "agent_module", "-c", &expr,
                    "--quit-on-finish", "--json-output"])
@@ -352,11 +360,22 @@ impl Indexer {
         logoscore_bin: &str,
         modules_dir: &str,
     ) -> Result<()> {
+        // Topic is interpolated into the logoscore expression — require a strict
+        // allowlist so it can't break out of the string literal.
+        if self.config.delivery_topic.is_empty()
+            || !self.config.delivery_topic.bytes().all(|b|
+                b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'-' | b'_'))
+        {
+            bail!("delivery_topic must be [A-Za-z0-9._/-]+");
+        }
+        // Hex-encode the envelope JSON so the payload contains only [0-9a-f] and
+        // cannot contain a quote or backslash — no escaping guesswork, no breakout.
+        // The delivery wire payload for the LogosCore backend is hex(envelope-json).
         let json = serde_json::to_string(payload)?;
         let expr = format!(
             "send(\"{}\", \"{}\")",
             self.config.delivery_topic,
-            json.replace('\\', "\\\\").replace('"', "\\\"")
+            hex::encode(json.as_bytes())
         );
         let out = tokio::process::Command::new(logoscore_bin)
             .args(["-m", modules_dir, "-l", "delivery_module", "-c", &expr,

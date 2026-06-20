@@ -140,6 +140,9 @@ Every broadcast uses this JSON structure:
 ```
 
 Any app subscribing to the topic can parse this envelope without depending on Whistleblower.
+On the `LogosCore` backend the payload is hex-encoded over the `delivery_module.send`
+transport (so it can't break out of the module-call expression); subscribers hex-decode
+to recover the JSON above.
 
 ## On-chain registry choice
 
