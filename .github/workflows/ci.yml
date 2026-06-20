@@ -7,16 +7,14 @@ on:
     branches: [main]
 
 jobs:
-  unit:
-    name: Unit tests
+  test:
+    name: Build + unit/e2e-logic tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -27,40 +25,16 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Cargo check
-        run: cargo check --workspace
+      # Host-buildable crates (the zkVM guest bin `cid_registry_program` is built
+      # separately with the risc0 target — see README; it is not host-compilable).
+      - name: Build host crates
+        run: cargo build -p document-indexer -p batch-anchor
 
-      - name: Unit tests (no chain required)
-        run: cargo test --workspace -- --exclude integration
+      # Unit + logic tests: cid-registry registry rules (idempotency, batch>=10,
+      # within-batch dedup, query-by-CID) and the indexer broadcast dedup / retry.
+      - name: Unit tests
+        run: cargo test --workspace --lib
 
-  integration:
-    name: Integration tests (sequencer)
-    runs-on: ubuntu-latest
-    needs: unit
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Start sequencer (standalone mode)
-        run: |
-          docker compose -f docker-compose.yml up -d sequencer
-          until curl -sf http://127.0.0.1:3040/ \
-            -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","method":"hello","params":{},"id":1}'; do
-            sleep 2
-          done
-
-      - name: Start storage + delivery
-        run: docker compose -f docker-compose.yml up -d storage delivery
-
-      - name: Integration tests
-        env:
-          RISC0_DEV_MODE: "0"
-        run: cargo test --workspace --test integration -- --include-ignored
-
-      - name: demo.sh smoke test
-        env:
-          RISC0_DEV_MODE: "0"
-        run: bash demo.sh
+      # Full upload->broadcast->anchor e2e (tests/integration.rs) is #[ignore]'d:
+      # it needs a live LEZ sequencer + Logos storage/delivery modules, which are
+      # not yet published as CI images. Run locally with `RISC0_DEV_MODE=0 bash demo.sh`.

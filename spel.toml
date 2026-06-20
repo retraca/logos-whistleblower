@@ -1,0 +1,3 @@
+[program]
+idl = "cid-registry/cid-registry.idl.json"
+binary = "target/riscv32im-risc0-zkvm-elf/docker/cid_registry_program.bin"

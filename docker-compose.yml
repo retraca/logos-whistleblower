@@ -4,7 +4,7 @@ services:
   sequencer:
     image: lssa/sequencer_service
     ports:
-      - "3040:3040"
+      - "127.0.0.1:3040:3040"
     environment:
       RUST_LOG: info
       RISC0_SERVER_PATH: /usr/local/bin/r0vm
@@ -25,10 +25,14 @@ services:
       retries: 10
       start_period: 30s
 
+  # Note: replace these image names with the actual Logos Storage and Delivery
+  # service images once they are published (see logos-blockchain org on GitHub).
+  # The image names below are placeholders -- the services are from the Logos
+  # p2p stack and are not yet bundled in the lez-build repo.
   storage:
     image: lssa/logos_storage_service
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       sequencer:
         condition: service_healthy
@@ -36,7 +40,7 @@ services:
   delivery:
     image: lssa/logos_delivery_service
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     depends_on:
       sequencer:
         condition: service_healthy

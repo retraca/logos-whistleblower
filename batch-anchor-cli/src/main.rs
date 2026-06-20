@@ -40,6 +40,9 @@ enum Commands {
         /// Stop after anchoring N batches (0 = run indefinitely).
         #[arg(long, default_value = "0")]
         max_batches: usize,
+        /// Print what would be anchored without submitting any transactions.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Show anchoring statistics from the local state DB.
     Status,
@@ -54,7 +57,8 @@ async fn main() -> Result<()> {
             topic,
             batch_size,
             max_batches,
-        } => run(&cli.delivery_url, &cli.sequencer_url, &db, &topic, batch_size, max_batches).await,
+            dry_run,
+        } => run(&cli.delivery_url, &cli.sequencer_url, &db, &topic, batch_size, max_batches, dry_run).await,
         Commands::Status => status(&db),
     }
 }
@@ -66,6 +70,7 @@ async fn run(
     topic: &str,
     batch_size: usize,
     max_batches: usize,
+    dry_run: bool,
 ) -> Result<()> {
     let config = IndexerConfig {
         delivery_url: delivery_url.into(),
@@ -143,6 +148,22 @@ async fn run(
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+
+        if dry_run {
+            println!(
+                "[dry-run] would anchor {} CIDs (cursor {}→{}):",
+                entries.len(),
+                cursor,
+                new_cursor
+            );
+            for (cid, hash) in &entries {
+                println!("  cid={cid}  meta_hash={}", hex::encode(hash));
+            }
+            save_cursor(db, new_cursor)?;
+            cursor = new_cursor;
+            batches_submitted += 1;
+            continue;
+        }
 
         println!("Anchoring {} CIDs (cursor {}→{})...", entries.len(), cursor, new_cursor);
         match indexer.anchor_batch(entries.clone(), now).await {

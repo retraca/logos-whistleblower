@@ -42,8 +42,9 @@ void WhistleblowerModule::uploadFile(
     auto* nam = new QNetworkAccessManager(this);
     auto* multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType, this);
     QHttpPart filePart;
+    // Use a generic filename to avoid leaking the uploader's local path.
     filePart.setHeader(QNetworkRequest::ContentDispositionHeader,
-                       QStringLiteral("form-data; name=\"file\"; filename=\"") + QFileInfo(*file).fileName() + "\"");
+                       QStringLiteral("form-data; name=\"file\"; filename=\"document.bin\""));
     filePart.setBodyDevice(file);
     file->setParent(multiPart);
     multiPart->append(filePart);
@@ -82,7 +83,9 @@ void WhistleblowerModule::uploadFile(
         envelope[QStringLiteral("description")] = description;
         envelope[QStringLiteral("content_type")] = QStringLiteral("application/octet-stream");
         envelope[QStringLiteral("size_bytes")] = static_cast<qint64>(file->size());
-        envelope[QStringLiteral("timestamp")] = QDateTime::currentSecsSinceEpoch();
+        // Coarsen timestamp to 1-hour granularity to reduce timing deanonymization risk.
+        const qint64 hourBucket = (QDateTime::currentSecsSinceEpoch() / 3600) * 3600;
+        envelope[QStringLiteral("timestamp")] = hourBucket;
         QJsonArray tagsArr;
         for (const auto& t : tags) { tagsArr.append(t); }
         envelope[QStringLiteral("tags")] = tagsArr;
@@ -102,6 +105,10 @@ void WhistleblowerModule::uploadFile(
             } else {
                 setStatus(QStringLiteral("Published. CID: ") + cid);
                 emit uploadFinished(cid, true, QString());
+                // If the user asked for immediate on-chain anchoring, trigger it.
+                if (anchorOnChain) {
+                    runBatchAnchor();
+                }
             }
         });
     });

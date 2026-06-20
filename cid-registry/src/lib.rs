@@ -52,7 +52,7 @@ pub struct RegistryState {
 #[must_use]
 pub fn initialize(
     registry_account: AccountWithMetadata,
-) -> Vec<nssa_core::account::AccountPostState> {
+) -> Vec<nssa_core::program::AccountPostState> {
     assert_eq!(
         registry_account.account,
         Account::default(),
@@ -60,8 +60,11 @@ pub fn initialize(
     );
     let state = RegistryState { records: vec![] };
     let mut account = registry_account.account;
-    account.data = Data::from_borsh(&state);
-    vec![nssa_core::account::AccountPostState::new(account)]
+    account.data = Data::try_from(
+        borsh::to_vec(&state).expect("RegistryState must serialise"),
+    )
+    .expect("serialised state fits Data");
+    vec![nssa_core::program::AccountPostState::new(account)]
 }
 
 /// Anchor a batch of CIDs.
@@ -76,29 +79,55 @@ pub fn initialize(
 pub fn anchor_batch(
     registry_account: AccountWithMetadata,
     entries: Vec<(Vec<u8>, [u8; 32], u64)>, // (cid_bytes, metadata_hash, timestamp)
-) -> Result<Vec<nssa_core::account::AccountPostState>, SpelError> {
+) -> Result<Vec<nssa_core::program::AccountPostState>, SpelError> {
+    let state = RegistryState::try_from_slice(registry_account.account.data.as_ref())
+        .expect("RegistryState must deserialise from account data");
+
+    let state = apply_anchor(state, entries)?;
+
+    let mut account = registry_account.account;
+    account.data = Data::try_from(
+        borsh::to_vec(&state).map_err(|e| SpelError::SerializationError {
+            message: e.to_string(),
+        })?,
+    )
+    .map_err(|e| SpelError::SerializationError {
+        message: format!("state too large: {e:?}"),
+    })?;
+    Ok(vec![nssa_core::program::AccountPostState::new(account)])
+}
+
+/// Pure state transition for a batch anchor: applies `(cid, metadata_hash, timestamp)`
+/// entries to a `RegistryState`. Idempotent — CIDs already present (or repeated within
+/// the batch) are skipped without error. Errors on oversized batch or wrong CID length.
+/// Extracted from `anchor_batch` so the registry logic is unit-testable without a chain.
+///
+/// # Errors
+/// `ERR_BATCH_TOO_LARGE` if `entries.len() > MAX_BATCH_SIZE`; `ERR_INVALID_CID` if any CID
+/// is not `CID_BYTES` long.
+pub fn apply_anchor(
+    mut state: RegistryState,
+    entries: Vec<(Vec<u8>, [u8; 32], u64)>,
+) -> Result<RegistryState, SpelError> {
     if entries.len() > MAX_BATCH_SIZE {
         return Err(SpelError::Custom {
             code: ERR_BATCH_TOO_LARGE,
+            message: "batch exceeds 50-CID limit".to_string(),
         });
     }
-
-    let mut state = RegistryState::try_from_slice(&registry_account.account.data.0)
-        .expect("RegistryState must deserialise from account data");
-
-    let existing: std::collections::HashSet<[u8; CID_BYTES]> =
+    let mut seen: std::collections::HashSet<[u8; CID_BYTES]> =
         state.records.iter().map(|r| r.cid).collect();
-
     for (cid_bytes, metadata_hash, anchor_timestamp) in entries {
         if cid_bytes.len() != CID_BYTES {
             return Err(SpelError::Custom {
                 code: ERR_INVALID_CID,
+                message: "CID must be 46 bytes".to_string(),
             });
         }
         let mut cid = [0u8; CID_BYTES];
         cid.copy_from_slice(&cid_bytes);
-        if existing.contains(&cid) {
-            continue; // idempotent
+        if !seen.insert(cid) {
+            continue; // idempotent: already registered or duplicate in batch
         }
         state.records.push(DocumentRecord {
             cid,
@@ -106,10 +135,7 @@ pub fn anchor_batch(
             anchor_timestamp,
         });
     }
-
-    let mut account = registry_account.account;
-    account.data = Data::from_borsh(&state);
-    Ok(vec![nssa_core::account::AccountPostState::new(account)])
+    Ok(state)
 }
 
 /// Look up a document record by CID. Returns `None` if not found.
@@ -118,7 +144,7 @@ pub fn query_by_cid(
     registry_account: &AccountWithMetadata,
     cid: [u8; CID_BYTES],
 ) -> Option<DocumentRecord> {
-    let state = RegistryState::try_from_slice(&registry_account.account.data.0)
+    let state = RegistryState::try_from_slice(registry_account.account.data.as_ref())
         .expect("RegistryState must deserialise");
     state.records.into_iter().find(|r| r.cid == cid)
 }
@@ -128,61 +154,50 @@ mod tests {
     use super::*;
     use nssa_core::account::{Account, AccountId, AccountWithMetadata};
 
-    fn blank_registry() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account_id: AccountId::default(),
-            account: Account::default(),
-        }
+    fn empty() -> RegistryState {
+        RegistryState { records: vec![] }
     }
 
     #[test]
-    fn initialize_creates_empty_registry() {
-        let registry = blank_registry();
-        let post = initialize(registry);
-        assert_eq!(post.len(), 1);
-        let state =
-            RegistryState::try_from_slice(&post[0].account.data.0).expect("deserialise");
-        assert!(state.records.is_empty());
-    }
-
-    #[test]
-    fn anchor_batch_adds_records() {
-        let mut registry = blank_registry();
-        registry.account.data = Data::from_borsh(&RegistryState { records: vec![] });
+    fn anchor_adds_record() {
         let cid = [0x12u8; CID_BYTES];
-        let hash = [0xabu8; 32];
-        let entries = vec![(cid.to_vec(), hash, 1_700_000_000u64)];
-        let post = anchor_batch(registry, entries).unwrap();
-        let state =
-            RegistryState::try_from_slice(&post[0].account.data.0).expect("deserialise");
-        assert_eq!(state.records.len(), 1);
-        assert_eq!(state.records[0].cid, cid);
+        let s = apply_anchor(empty(), vec![(cid.to_vec(), [0xab; 32], 1_700_000_000)]).unwrap();
+        assert_eq!(s.records.len(), 1);
+        assert_eq!(s.records[0].cid, cid);
     }
 
     #[test]
-    fn anchor_batch_idempotent() {
-        let mut registry = blank_registry();
+    fn anchor_batch_of_10() {
+        let entries: Vec<_> = (0..10u8)
+            .map(|i| {
+                let mut cid = [0u8; CID_BYTES];
+                cid[0] = i;
+                (cid.to_vec(), [0u8; 32], i as u64)
+            })
+            .collect();
+        let s = apply_anchor(empty(), entries).unwrap();
+        assert_eq!(s.records.len(), 10, "a batch of 10 distinct CIDs must all register");
+    }
+
+    #[test]
+    fn anchor_idempotent_on_known_cid() {
         let cid = [0x12u8; CID_BYTES];
-        let hash = [0xabu8; 32];
         let initial = RegistryState {
-            records: vec![DocumentRecord {
-                cid,
-                metadata_hash: hash,
-                anchor_timestamp: 1_000,
-            }],
+            records: vec![DocumentRecord { cid, metadata_hash: [0xab; 32], anchor_timestamp: 1_000 }],
         };
-        registry.account.data = Data::from_borsh(&initial);
-        let entries = vec![(cid.to_vec(), hash, 2_000u64)];
-        let post = anchor_batch(registry, entries).unwrap();
-        let state =
-            RegistryState::try_from_slice(&post[0].account.data.0).expect("deserialise");
-        assert_eq!(state.records.len(), 1, "duplicate CID must not be appended");
+        let s = apply_anchor(initial, vec![(cid.to_vec(), [0xab; 32], 2_000)]).unwrap();
+        assert_eq!(s.records.len(), 1, "re-anchoring a known CID must not append");
     }
 
     #[test]
-    fn anchor_batch_rejects_oversized_batch() {
-        let mut registry = blank_registry();
-        registry.account.data = Data::from_borsh(&RegistryState { records: vec![] });
+    fn anchor_dedups_within_batch() {
+        let cid = [0x55u8; CID_BYTES];
+        let s = apply_anchor(empty(), vec![(cid.to_vec(), [0; 32], 1), (cid.to_vec(), [0; 32], 2)]).unwrap();
+        assert_eq!(s.records.len(), 1, "a CID repeated within one batch must register once");
+    }
+
+    #[test]
+    fn anchor_rejects_oversized_batch() {
         let entries: Vec<_> = (0..=MAX_BATCH_SIZE)
             .map(|i| {
                 let mut cid = [0u8; CID_BYTES];
@@ -190,29 +205,29 @@ mod tests {
                 (cid.to_vec(), [0u8; 32], i as u64)
             })
             .collect();
-        let result = anchor_batch(registry, entries);
-        assert!(result.is_err());
+        assert!(apply_anchor(empty(), entries).is_err(), "batch over the limit must error");
+    }
+
+    #[test]
+    fn anchor_rejects_bad_cid_length() {
+        assert!(apply_anchor(empty(), vec![(vec![0u8; 10], [0; 32], 1)]).is_err());
     }
 
     #[test]
     fn query_by_cid_finds_record() {
         let cid = [0x34u8; CID_BYTES];
-        let hash = [0xcdu8; 32];
         let state = RegistryState {
-            records: vec![DocumentRecord {
-                cid,
-                metadata_hash: hash,
-                anchor_timestamp: 9_999,
-            }],
+            records: vec![DocumentRecord { cid, metadata_hash: [0xcd; 32], anchor_timestamp: 9_999 }],
         };
         let registry = AccountWithMetadata {
             account_id: AccountId::default(),
+            is_authorized: false,
             account: Account {
-                data: Data::from_borsh(&state),
+                data: Data::try_from(borsh::to_vec(&state).unwrap()).unwrap(),
                 ..Account::default()
             },
         };
         let record = query_by_cid(&registry, cid).expect("must find record");
-        assert_eq!(record.metadata_hash, hash);
+        assert_eq!(record.metadata_hash, [0xcd; 32]);
     }
 }
